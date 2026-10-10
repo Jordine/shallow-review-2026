@@ -4,61 +4,63 @@ Create Taxonomy and Editorial from Curated Links
 Generates a structured output with paper listings, taxonomy, and editorial overview.
 """
 
-import os
 import argparse
-import logging
 from pathlib import Path
 import pandas as pd
-from openai import OpenAI
+import anthropic
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from terminal import console, setup_logging, print_summary
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("arxiv-taxonomy-editorial")
+log = setup_logging("arxiv-taxonomy-editorial")
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("KEY"))
+# Initialize Claude client (reads ANTHROPIC_API_KEY from the environment / .env)
+client = anthropic.Anthropic()
+
+# On a safety-classifier refusal, retry on Anthropic's recommended fallback model
+FALLBACK_BETAS = ["server-side-fallback-2026-07-01"]
 
 # Default configuration
-DEFAULT_INPUT_CSV = "results/6-arxiv_curated_relevant_only.csv"
-DEFAULT_OUTPUT_TXT = "results/7-taxonomy-and-editorial.txt"
-DEFAULT_MODEL = "gpt-5-mini"
+DEFAULT_INPUT_CSV = "results/3-arxiv-papers-annotated.csv"
+DEFAULT_OUTPUT_MD = "results/4-arxiv-taxonomy-and-editorial.md"
+DEFAULT_MODEL = "claude-sonnet-5-5"
+TAXONOMY_MODEL = "claude-sonnet-5-5"  # taxonomy + editorial call only; per-paper tagging uses DEFAULT_MODEL
 
 # System prompt for taxonomy generation
 TAXONOMY_SYSTEM_PROMPT = """You are an expert in technical AI alignment research creating a taxonomy of recent work.
 
 Your task is to analyze a collection of curated arXiv papers and create:
 1. A hierarchical taxonomy that organizes the papers by their main themes and contributions
-2. An insightful editorial summarizing the state and progress of AI alignment in 2025
+2. An insightful editorial summarizing the state and progress of AI alignment in 2026
 
 The taxonomy should:
 - Group papers into coherent themes/categories
 - Use clear, descriptive category names
 - Be hierarchical (main categories with subcategories where appropriate)
 - Cover all major themes present in the papers
-- Be formatted as nested bullet points
+- Be formatted as nested Markdown bullet points
 
 The editorial should:
 - Be 100-500 words
-- Provide a high-level overview of AI alignment progress in 2025
+- Provide a high-level overview of AI alignment progress in 2026
 - Highlight key trends, themes, and important developments
 - Be engaging and insightful
 - Focus on technical advancements and their implications
 
 Base your analysis ONLY on the provided papers."""
 
-TAXONOMY_USER_PROMPT_TEMPLATE = """Based on these curated AI alignment papers from 2025, create a taxonomy and editorial.
+TAXONOMY_USER_PROMPT_TEMPLATE = """Based on these curated AI alignment papers from 2026, create a taxonomy and editorial.
 
 Papers:
 {papers_text}
 
 Generate:
 1. A hierarchical taxonomy organizing these papers by themes
-2. A 100-500 word editorial on AI alignment progress in 2025"""
+2. A 100-500 word editorial on AI alignment progress in 2026"""
 
 
 class TaxonomyAndEditorial(BaseModel):
@@ -112,7 +114,7 @@ Existing Agenda: {row.get('agenda', 'N/A')}
 
 def generate_taxonomy_and_editorial(papers_text: str) -> TaxonomyAndEditorial | None:
     """
-    Generate taxonomy and editorial using OpenAI API.
+    Generate taxonomy and editorial using the Claude API.
     
     Args:
         papers_text: Formatted string of all papers
@@ -127,22 +129,28 @@ def generate_taxonomy_and_editorial(papers_text: str) -> TaxonomyAndEditorial | 
             papers_text=papers_text
         )
         
-        response = client.responses.parse(
-            model=DEFAULT_MODEL,
-            reasoning={
-                "effort": "low",
-            },
-            input=[
-                {"role": "system", "content": TAXONOMY_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            text_format=TaxonomyAndEditorial,
-        )
+        # Stream: the prompt holds every paper and the output is long
+        with console.status("Waiting for Claude to write the taxonomy and editorial..."), client.beta.messages.stream(
+            model=TAXONOMY_MODEL,
+            max_tokens=64000,
+            system=TAXONOMY_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+            output_config={"effort": "high"},
+            output_format=TaxonomyAndEditorial,
+            betas=FALLBACK_BETAS,
+            fallbacks="default",
+        ) as stream:
+            response = stream.get_final_message()
         
-        return response.output_parsed
+        if response.stop_reason == "refusal":
+            category = response.stop_details.category if response.stop_details else None
+            log.error(f"Claude declined to generate the taxonomy (category: {category})")
+            return None
+        
+        return response.parsed_output
         
     except Exception as e:
-        log.error(f"Error calling OpenAI API: {e}")
+        log.error(f"Error calling Claude API: {e}")
         return None
 
 
@@ -171,16 +179,22 @@ Abstract: {paper_summary}
 What taxonomy tags apply to this paper?"""
     
     try:
-        response = client.responses.parse(
+        response = client.beta.messages.parse(
             model=DEFAULT_MODEL,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            text_format=PaperTags,
+            max_tokens=16000,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            output_config={"effort": "high"},
+            output_format=PaperTags,
+            betas=FALLBACK_BETAS,
+            fallbacks="default",
         )
         
-        return response.output_parsed.tags
+        if response.stop_reason == "refusal":
+            log.warning(f"Claude declined to tag: {paper_title[:60]}")
+            return []
+        
+        return response.parsed_output.tags
         
     except Exception as e:
         log.error(f"Error generating tags: {e}")
@@ -190,39 +204,33 @@ What taxonomy tags apply to this paper?"""
 def create_output_document(df: pd.DataFrame, taxonomy: str, editorial: str, 
                           output_path: Path):
     """
-    Create the final output document with papers, taxonomy, and editorial.
+    Create the final Markdown document with papers, taxonomy, and editorial.
     
     Args:
         df: DataFrame with paper information and tags
         taxonomy: Generated taxonomy text
         editorial: Generated editorial text
-        output_path: Path to save the output file
+        output_path: Path to save the Markdown file
     """
-    lines = []
+    lines = ["# arXiv Taxonomy and Editorial", ""]
     
     # 1. Add editorial section first
     log.info("Adding editorial...")
-    lines.append("=" * 80)
-    lines.append("EDITORIAL")
-    lines.append("=" * 80)
+    lines.append("## Editorial")
     lines.append("")
     lines.append(editorial)
     lines.append("")
     
     # 2. Add taxonomy section
     log.info("Adding taxonomy...")
-    lines.append("=" * 80)
-    lines.append("TAXONOMY")
-    lines.append("=" * 80)
+    lines.append("## Taxonomy")
     lines.append("")
     lines.append(taxonomy)
     lines.append("")
     
     # 3. Add checklist/todo section
     log.info("Adding checklist...")
-    lines.append("=" * 80)
-    lines.append("TODO: PAPERS TO REVIEW")
-    lines.append("=" * 80)
+    lines.append("## TODO: Papers to Review")
     lines.append("")
     for _, row in df.iterrows():
         title = row['title']
@@ -231,20 +239,19 @@ def create_output_document(df: pd.DataFrame, taxonomy: str, editorial: str,
     
     # 4. Add paper listings
     log.info("Formatting paper listings...")
-    lines.append("=" * 80)
-    lines.append("PAPER SUMMARIES")
-    lines.append("=" * 80)
+    lines.append("## Paper Summaries")
     lines.append("")
     for idx, row in df.iterrows():
         title = row['title']
         pdf_url = row['pdf_url']
         summary = row['summary']
-        tags = row.get('taxonomy_tags', 'N/A')
+        # tags = row.get('taxonomy_tags', 'N/A')  # per-paper tagging disabled
         
-        lines.append(title)
+        lines.append(f"### {title}")
+        lines.append("")
         lines.append(f"- Link: {pdf_url}")
         lines.append(f"- Summary: {summary}")
-        lines.append(f"- Taxonomy tags: {tags}")
+        # lines.append(f"- Taxonomy tags: {tags}")
         lines.append("")  # Blank line between papers
     
     # Write to file
@@ -253,13 +260,13 @@ def create_output_document(df: pd.DataFrame, taxonomy: str, editorial: str,
     log.info(f"Saved output to: {output_path}")
 
 
-def process_papers(input_csv: Path, output_txt: Path):
+def process_papers(input_csv: Path, output_md: Path):
     """
     Main processing function.
     
     Args:
         input_csv: Path to input CSV with curated papers
-        output_txt: Path to output text file
+        output_md: Path to output Markdown file
     """
     # Load papers
     df = load_papers(input_csv)
@@ -278,26 +285,25 @@ def process_papers(input_csv: Path, output_txt: Path):
     log.info(f"Taxonomy length: {len(result.taxonomy)} characters")
     log.info(f"Editorial length: {len(result.editorial.split())} words")
     
-    # Generate individual paper tags based on taxonomy
-    log.info("Generating taxonomy tags for each paper...")
-    taxonomy_tags = []
-    for idx, row in df.iterrows():
-        log.info(f"Tagging paper {idx + 1}/{len(df)}: {row['title'][:60]}...")
-        tags = generate_paper_tags(row['title'], row['summary'], result.taxonomy)
-        taxonomy_tags.append(", ".join(tags) if tags else "N/A")
-    
-    df['taxonomy_tags'] = taxonomy_tags
+    # Per-paper tagging disabled: only the taxonomy and editorial are generated.
+    # # Generate individual paper tags based on taxonomy
+    # log.info("Generating taxonomy tags for each paper...")
+    # taxonomy_tags = []
+    # for idx, row in df.iterrows():
+    #     log.info(f"Tagging paper {idx + 1}/{len(df)}: {row['title'][:60]}...")
+    #     tags = generate_paper_tags(row['title'], row['summary'], result.taxonomy)
+    #     taxonomy_tags.append(", ".join(tags) if tags else "N/A")
+    #
+    # df['taxonomy_tags'] = taxonomy_tags
     
     # Create output document
-    create_output_document(df, result.taxonomy, result.editorial, output_txt)
+    create_output_document(df, result.taxonomy, result.editorial, output_md)
     
     # Print summary
-    log.info("\n" + "="*50)
-    log.info("GENERATION COMPLETE")
-    log.info("="*50)
-    log.info(f"Papers processed: {len(df)}")
-    log.info(f"Output saved to: {output_txt}")
-    log.info("="*50)
+    print_summary("Generation complete", [
+        ("Papers processed", str(len(df))),
+        ("Output saved to", str(output_md)),
+    ])
 
 
 def parse_arguments():
@@ -308,13 +314,13 @@ def parse_arguments():
         epilog="""
 Examples:
   # Use default files
-  python 7-create-taxonomy-and-editorial-from-curated-links.py
+  python src/generate_taxonomy_and_editorial.py
 
   # Specify custom input and output
-  python 7-create-taxonomy-and-editorial-from-curated-links.py --input my_papers.csv --output my_output.txt
+  python src/generate_taxonomy_and_editorial.py --input my_papers.csv --output my_output.md
 
   # Use different model
-  python 7-create-taxonomy-and-editorial-from-curated-links.py --model gpt-4o
+  python src/generate_taxonomy_and_editorial.py --model claude-opus-5-5
         """
     )
     
@@ -328,15 +334,15 @@ Examples:
     parser.add_argument(
         "--output",
         type=str,
-        default=DEFAULT_OUTPUT_TXT,
-        help=f"Output text file for taxonomy and editorial (default: {DEFAULT_OUTPUT_TXT})"
+        default=DEFAULT_OUTPUT_MD,
+        help=f"Output Markdown file for taxonomy and editorial (default: {DEFAULT_OUTPUT_MD})"
     )
     
     parser.add_argument(
         "--model",
         type=str,
         default=DEFAULT_MODEL,
-        help=f"OpenAI model to use (default: {DEFAULT_MODEL})"
+        help=f"Claude model to use (default: {DEFAULT_MODEL})"
     )
     
     return parser.parse_args()
@@ -346,32 +352,25 @@ def main():
     """Main execution function."""
     args = parse_arguments()
     
-    # Check for API key
-    if not os.getenv("KEY"):
-        log.error("KEY environment variable not set!")
-        log.error("Please set it in your .env file")
-        return
-    
     # Set model
     global DEFAULT_MODEL
     DEFAULT_MODEL = args.model
     
     # Convert paths
     input_csv = Path(args.input)
-    output_txt = Path(args.output)
+    output_md = Path(args.output)
     
     # Check if input file exists
     if not input_csv.exists():
         log.error(f"Input CSV file not found: {input_csv}")
-        log.error("Please run 6-curate-unique-arxiv-links.py first.")
+        log.error("Please run src/annotate_arxiv_papers.py first.")
         return
     
     # Process papers
     log.info("Starting taxonomy and editorial generation...")
-    process_papers(input_csv, output_txt)
+    process_papers(input_csv, output_md)
     log.info("Complete!")
 
 
 if __name__ == "__main__":
     main()
-

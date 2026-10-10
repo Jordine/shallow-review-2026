@@ -1,30 +1,34 @@
 #!/usr/bin/env python3
 """
-ArXiv Results Filter Script
-Uses LLM to tag and filter arXiv papers by relevance to technical AI alignment.
+ArXiv Relevance Filter Script
+Uses Claude to rate arXiv papers by relevance to technical AI alignment and keeps the highly relevant ones.
 """
 
-import os
 import argparse
-import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pandas as pd
-from openai import OpenAI
+import anthropic
 from pydantic import BaseModel
 from typing import Literal
+from dotenv import load_dotenv
+from terminal import setup_logging, progress_bar, print_summary
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("arxiv-filter")
+log = setup_logging("arxiv-filter")
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("KEY"))
+# Initialize Claude client (reads ANTHROPIC_API_KEY from the environment / .env)
+client = anthropic.Anthropic()
 
 # Default configuration
-DEFAULT_INPUT_FILE = "results/1-arxiv_raw_search_results.csv"
-DEFAULT_ANNOTATED_OUTPUT = "results/2-arxiv_annotated_results.csv"
-DEFAULT_FILTERED_OUTPUT = "results/2-arxiv_highly_relevant_results.csv"
-DEFAULT_MODEL = "gpt-4.1"
+DEFAULT_INPUT_FILE = "results/1-arxiv-papers-raw.csv"
+DEFAULT_RATED_OUTPUT = "results/2-arxiv-papers-rated.csv"
+DEFAULT_FILTERED_OUTPUT = "results/2-arxiv-papers-highly-relevant.csv"
+DEFAULT_MODEL = "claude-haiku-5-5"
+BATCH_SIZE = 10  # Papers rated in parallel per batch
 
 # System prompt for the LLM
 SYSTEM_PROMPT = """You are an expert in technical AI alignment research helping to conduct a 2025 shallow review of the field.
@@ -58,12 +62,10 @@ Your task is to analyze arXiv papers and determine their relevance to technical 
 - Papers that only tangentially mention safety/alignment
 - Purely philosophical discussions without technical content
 
-For each paper, provide:
-1. **Tags**: 2-5 specific tags categorizing the paper's contribution areas
-2. **Relevance**: Rate as "not relevant", "moderately relevant", or "highly relevant"
-   - "highly relevant": Core technical alignment work with novel contributions
-   - "moderately relevant": Related to alignment but peripheral or applied
-   - "not relevant": Not about AI alignment or safety
+For each paper, rate its relevance as "not relevant", "moderately relevant", or "highly relevant":
+- "highly relevant": Core technical alignment work with novel contributions
+- "moderately relevant": Related to alignment but peripheral or applied
+- "not relevant": Not about AI alignment or safety
 
 Be selective - only rate papers as "highly relevant" if they make meaningful technical contributions to AI alignment."""
 
@@ -77,26 +79,25 @@ Abstract: {summary}
 
 Categories: {categories}
 
-Provide tags and relevance rating."""
+Provide a relevance rating."""
 
 
-class PaperAnalysis(BaseModel):
-    """Structured output for paper analysis."""
-    tags: list[str]
+class PaperRelevance(BaseModel):
+    """Structured output for a paper's relevance rating."""
     relevance: Literal["not relevant", "moderately relevant", "highly relevant"]
     reasoning: str  # Brief explanation of the rating
 
 
-def call_openai_api(paper_info: dict, response_format: type[BaseModel]) -> PaperAnalysis | None:
+def call_claude_api(paper_info: dict, response_format: type[BaseModel]) -> PaperRelevance | None:
     """
-    Call OpenAI API with structured output parsing using responses API.
+    Call the Claude API with structured output parsing.
 
     Args:
         paper_info: Dictionary with paper information (title, authors, summary, categories)
         response_format: The Pydantic model class for response parsing
 
     Returns:
-        Parsed PaperAnalysis object or None if error
+        Parsed PaperRelevance object or None if error
     """
     try:
         # Format the user prompt with the paper information
@@ -107,38 +108,40 @@ def call_openai_api(paper_info: dict, response_format: type[BaseModel]) -> Paper
             categories=paper_info["categories"]
         )
 
-        response = client.responses.parse(
+        # No refusal fallback: Claude Haiku 5.5 doesn't support server-side fallbacks
+        response = client.messages.parse(
             model=DEFAULT_MODEL,
-            input=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            text_format=response_format,
+            max_tokens=16000,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+            output_format=response_format,
         )
 
-        # Get the parsed response
-        parsed_response = response.output_parsed
-        return parsed_response
+        if response.stop_reason == "refusal":
+            category = response.stop_details.category if response.stop_details else None
+            log.warning(f"Claude declined to analyze this paper (category: {category})")
+            return None
 
+        # Get the parsed response
+        return response.parsed_output
+
+    except anthropic.AuthenticationError:
+        raise  # Missing/invalid API key: stop instead of failing every paper
     except Exception as e:
-        log.error(f"Error calling OpenAI API: {e}")
+        log.error(f"Error calling Claude API: {e}")
         return None
 
 
-def analyze_paper(row: pd.Series, index: int, total: int) -> dict:
+def rate_paper(row: pd.Series) -> dict:
     """
-    Analyze a single paper and return tags and relevance.
+    Rate a single paper's relevance.
 
     Args:
         row: DataFrame row containing paper information
-        index: Current index (for logging)
-        total: Total number of papers (for logging)
 
     Returns:
-        Dictionary with tags, relevance, and reasoning
+        Dictionary with relevance and reasoning
     """
-    log.info(f"Analyzing paper {index + 1}/{total}: {row['title'][:60]}...")
-
     paper_info = {
         "title": row["title"],
         "authors": row["authors"],
@@ -146,58 +149,57 @@ def analyze_paper(row: pd.Series, index: int, total: int) -> dict:
         "categories": row["categories"]
     }
 
-    analysis = call_openai_api(paper_info, PaperAnalysis)
+    analysis = call_claude_api(paper_info, PaperRelevance)
 
     if analysis is None:
-        log.warning(f"Failed to analyze paper {index + 1}, skipping...")
+        log.warning(f"Failed to rate, skipping: {row['title'][:60]}")
         return {
-            "tags": [],
             "relevance": "not relevant",
             "reasoning": "Error during analysis"
         }
 
-    log.info(f"  → Relevance: {analysis.relevance}")
-    log.info(f"  → Tags: {', '.join(analysis.tags)}")
+    log.info(f"{analysis.relevance}: {row['title'][:60]}")
 
     return {
-        "tags": analysis.tags,
         "relevance": analysis.relevance,
         "reasoning": analysis.reasoning
     }
 
 
-def process_results(input_path: Path, annotated_output: Path, filtered_output: Path):
+def process_results(input_path: Path, rated_output: Path, filtered_output: Path):
     """
-    Process arXiv results: analyze, annotate, and filter.
+    Process arXiv results: rate each paper, then filter.
 
     Args:
         input_path: Path to input CSV file
-        annotated_output: Path for annotated output CSV
+        rated_output: Path for output CSV with every paper and its rating
         filtered_output: Path for filtered (highly relevant only) output CSV
     """
     # Read input CSV
     log.info(f"Reading input file: {input_path}")
     df = pd.read_csv(input_path)
-    log.info(f"Found {len(df)} papers to analyze")
+    log.info(f"Found {len(df)} papers to rate")
 
     # Initialize new columns
-    df["tags"] = None
     df["relevance"] = None
     df["reasoning"] = None
 
-    # Analyze each paper
-    for idx, row in df.iterrows():
-        analysis_result = analyze_paper(row, idx, len(df))
+    # Rate papers in batches: fire off one API call per paper in parallel, then gather the batch's results
+    rows = [row for _, row in df.iterrows()]
+    with progress_bar() as progress, ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+        task = progress.add_task("Rating papers", total=len(df))
+        for start in range(0, len(rows), BATCH_SIZE):
+            batch = rows[start:start + BATCH_SIZE]
+            # map() returns results in input order and re-raises a worker's exception (e.g. a bad API key)
+            for row, analysis_result in zip(batch, executor.map(rate_paper, batch)):
+                df.at[row.name, "relevance"] = analysis_result["relevance"]
+                df.at[row.name, "reasoning"] = analysis_result["reasoning"]
+            progress.advance(task, len(batch))
 
-        # Convert tags list to comma-separated string for CSV storage
-        df.at[idx, "tags"] = ", ".join(analysis_result["tags"])
-        df.at[idx, "relevance"] = analysis_result["relevance"]
-        df.at[idx, "reasoning"] = analysis_result["reasoning"]
-
-    # Save annotated results
-    annotated_output.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(annotated_output, index=False)
-    log.info(f"Saved annotated results to: {annotated_output}")
+    # Save rated results
+    rated_output.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(rated_output, index=False)
+    log.info(f"Saved rated results to: {rated_output}")
 
     # Filter for highly relevant papers
     highly_relevant_df = df[df["relevance"] == "highly relevant"].copy()
@@ -205,17 +207,11 @@ def process_results(input_path: Path, annotated_output: Path, filtered_output: P
     log.info(f"Saved {len(highly_relevant_df)} highly relevant papers to: {filtered_output}")
 
     # Print summary statistics
-    log.info("\n" + "="*50)
-    log.info("SUMMARY STATISTICS")
-    log.info("="*50)
-    log.info(f"Total papers analyzed: {len(df)}")
-    log.info(f"Highly relevant: {len(df[df['relevance'] == 'highly relevant'])} "
-             f"({len(df[df['relevance'] == 'highly relevant']) / len(df) * 100:.1f}%)")
-    log.info(f"Moderately relevant: {len(df[df['relevance'] == 'moderately relevant'])} "
-             f"({len(df[df['relevance'] == 'moderately relevant']) / len(df) * 100:.1f}%)")
-    log.info(f"Not relevant: {len(df[df['relevance'] == 'not relevant'])} "
-             f"({len(df[df['relevance'] == 'not relevant']) / len(df) * 100:.1f}%)")
-    log.info("="*50)
+    rows = [("Total papers rated", str(len(df)))]
+    for relevance in ["highly relevant", "moderately relevant", "not relevant"]:
+        count = (df["relevance"] == relevance).sum()
+        rows.append((relevance.capitalize(), f"{count} ({count / len(df) * 100:.1f}%)"))
+    print_summary("Relevance summary", rows)
 
 
 def parse_arguments():
@@ -226,13 +222,13 @@ def parse_arguments():
         epilog="""
 Examples:
   # Use default files
-  python filter_results.py
+  python src/filter_arxiv_papers.py
 
   # Specify custom input and output files
-  python filter_results.py --input my_results.csv --annotated my_annotated.csv --filtered my_filtered.csv
+  python src/filter_arxiv_papers.py --input my_results.csv --rated my_rated.csv --filtered my_filtered.csv
 
   # Process with custom model
-  python filter_results.py --model gpt-4o-mini
+  python src/filter_arxiv_papers.py --model claude-sonnet-5-5
         """
     )
 
@@ -244,10 +240,10 @@ Examples:
     )
 
     parser.add_argument(
-        "--annotated",
+        "--rated",
         type=str,
-        default=DEFAULT_ANNOTATED_OUTPUT,
-        help=f"Output CSV file for annotated results (default: {DEFAULT_ANNOTATED_OUTPUT})"
+        default=DEFAULT_RATED_OUTPUT,
+        help=f"Output CSV file with every paper and its rating (default: {DEFAULT_RATED_OUTPUT})"
     )
 
     parser.add_argument(
@@ -261,7 +257,7 @@ Examples:
         "--model",
         type=str,
         default=DEFAULT_MODEL,
-        help=f"OpenAI model to use (default: {DEFAULT_MODEL})"
+        help=f"Claude model to use (default: {DEFAULT_MODEL})"
     )
 
     return parser.parse_args()
@@ -271,33 +267,26 @@ def main():
     """Main execution function."""
     args = parse_arguments()
 
-    # Check for API key
-    if not os.getenv("KEY"):
-        log.error("KEY environment variable not set!")
-        log.error("Please set it in your .env file or environment")
-        return
-
     # Set model
     global DEFAULT_MODEL
     DEFAULT_MODEL = args.model
 
     # Convert paths
     input_path = Path(args.input)
-    annotated_output = Path(args.annotated)
+    rated_output = Path(args.rated)
     filtered_output = Path(args.filtered)
 
     # Check if input file exists
     if not input_path.exists():
         log.error(f"Input file not found: {input_path}")
-        log.error("Please run scrape.py first to generate arXiv results.")
+        log.error("Please run src/scrape_arxiv_papers.py first to generate arXiv results.")
         return
 
     # Process results
-    log.info("Starting analysis...")
-    process_results(input_path, annotated_output, filtered_output)
-    log.info("Analysis complete!")
+    log.info("Starting relevance rating...")
+    process_results(input_path, rated_output, filtered_output)
+    log.info("Rating complete!")
 
 
 if __name__ == "__main__":
     main()
-
