@@ -1,63 +1,36 @@
 ### AF and LW Scraper
 
-Minimal scripts to fetch posts from Alignment Forum or LessWrong by year and write CSV outputs.
+Scripts to fetch a year of LessWrong or Alignment Forum posts, filter them for relevance to technical AI alignment and annotate them with an LLM, and generate a taxonomy and editorial overview.
 
-### Structure
+### Which site to scrape
 
-- `1-scrape-AF-or-LW.py`: Scrape AF or LW posts for a year into CSV.
-- `results/`: Outputs (e.g., `1-af_raw_posts.csv`).
-- `notebooks/`, `archive/`, `input/`: Supporting/archived materials.
-- `utils.py` and other scripts may exist for follow-up processing.
+**Scrape LessWrong (the default).** Every Alignment Forum post is also published on LessWrong, so one LessWrong scrape covers both sites: AF posts are flagged with `af = True`, and nothing is duplicated. Scraping the Alignment Forum directly with `--site alignment-forum` is a backup, e.g. if LessWrong is unavailable or you only want AF posts. Each script takes the same `--site` option and uses `lw-` or `af-` file names to match.
 
-### Quickstart
+### Setup
 
-Scrape Alignment Forum (2025):
+Steps 2–4 call Claude: step 2 uses `claude-haiku-5-5` and steps 3–4 use `claude-sonnet-5-5` by default (change it with `--model`). Copy `.env.example` to `.env` in this folder and add your Anthropic API key:
 
 ```bash
-python AF-and-LW-scraper/1-scrape-AF-or-LW.py \
-  --site alignment-forum --year 2025 --max-pages 200 --delay 1.0 \
-  --out AF-and-LW-scraper/results/1-af_raw_posts.csv
+cp .env.example .env
 ```
 
-Scrape LessWrong (2025):
+### Usage
 
-```bash
-python AF-and-LW-scraper/1-scrape-AF-or-LW.py \
-  --site lesswrong --year 2025 --max-pages 200 --delay 1.0 \
-  --out AF-and-LW-scraper/results/1-lw_raw_posts.csv
-```
+Run each script from this folder, in order. Each script's defaults read the previous step's output. Add `--site alignment-forum` to every step to use the Alignment Forum instead (outputs are then named `af-` instead of `lw-`).
 
-Flags:
-- `--site`: `alignment-forum` or `lesswrong`
-- `--year`: year to fetch (default 2025)
-- `--max-pages`: number of 50-item pages to request (default 200)
-- `--delay`: seconds between requests (default 1.0)
-- `--out`: output CSV path
+| Step | Command | What it does | Output |
+| --- | --- | --- | --- |
+| 1 | `uv run python src/scrape_forum_posts.py` | Fetches every post from the year (default 2026), one month at a time | `results/1-lw-posts-raw.csv`: all posts (title, link, authors, date, AF flag, karma, comments, word count, forum tags, excerpt) |
+| 2 | `uv run python src/filter_forum_posts.py` | Rates each post's relevance to technical AI alignment and keeps the highly relevant ones | `results/2-lw-posts-rated.csv`: every post with its relevance rating and reasoning<br>`results/2-lw-posts-highly-relevant.csv`: only posts rated "highly relevant" |
+| 3 | `uv run python src/annotate_forum_posts.py` | Tags and summarizes the highly relevant posts, and adds karma per month since posting | `results/3-lw-posts-annotated.csv`: highly relevant posts with LLM tags, a one-sentence summary, and karma per month |
+| 4 | `uv run python src/generate_taxonomy_and_editorial.py` | Generates a taxonomy and editorial from the annotated posts | `results/4-lw-taxonomy-and-editorial.md`: editorial, taxonomy, review checklist, and post summaries |
 
-Notes:
-- Pagination uses limit=50 and offset; the script stops when fewer than 50 items are returned.
-- Titles are written as-is from the API.
+### Options
 
-### Analyze and curate
+- All scripts: `--site` (`lesswrong` or `alignment-forum`)
+- `scrape_forum_posts.py`: `--year`, `--output`, `--delay` (seconds between requests, default 1.0), `--max-pages` (safety cap on requests)
+- `filter_forum_posts.py`: `--input`, `--rated`, `--filtered`, `--model`, `--limit` (only rate the first N posts, for test runs)
+- `annotate_forum_posts.py`: `--input`, `--output`, `--model`
+- `generate_taxonomy_and_editorial.py`: `--input`, `--output`, `--model`
 
-Run the analysis script to filter, dedupe, rank, and emit summaries files.
-
-Basic usage (Alignment Forum raw CSV):
-
-```bash
-python AF-and-LW-scraper/2-analyze-AF-or-LW-links.py \
-  --in AF-and-LW-scraper/results/1-af_raw_posts.csv \
-  --out-dir AF-and-LW-scraper/results \
-  --year 2025 \
-  --curated-max 200
-```
-
-Outputs written to `results/`:
-- `2-af_filtered_posts.csv`
-- `3-af_summaries_and_tags.csv`
-- `3-af_summaries_and_tags.md`
-- `4-af_curated.csv`
-
-Optional flags:
-- `--keywords kw1 kw2 ...`: override default relevance keywords
-- `--summarize`: reserved flag; summary fields are currently derived from excerpts
+Run any script with `--help` for details.
