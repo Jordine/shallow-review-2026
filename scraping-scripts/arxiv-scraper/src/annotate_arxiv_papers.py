@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ArXiv Paper Annotation Script
-Uses Claude to add tags to the papers kept by the relevance filter, and Semantic Scholar to add citation counts.
+Uses Claude to add tags to the papers kept by the relevance filter.
 
 Basic usage (from the arxiv-scraper folder):
     uv run python src/annotate_arxiv_papers.py
@@ -10,13 +10,9 @@ Reads results/2-arxiv-papers-highly-relevant.csv and writes results/3-arxiv-pape
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-import os
-import re
-import time
 from pathlib import Path
 import pandas as pd
 import anthropic
-import requests
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from terminal import setup_logging, progress_bar, print_summary
@@ -39,16 +35,6 @@ DEFAULT_OUTPUT_FILE = "results/3-arxiv-papers-annotated.csv"
 DEFAULT_MODEL = "claude-sonnet-5-5"
 BATCH_SIZE = 10  # Papers annotated in parallel per batch
 
-# Semantic Scholar citation lookup (an API key is optional; it raises the rate limit)
-SEMANTIC_SCHOLAR_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
-SEMANTIC_SCHOLAR_BATCH_SIZE = 500  # Max IDs per batch request
-SEMANTIC_SCHOLAR_RETRIES = 5
-
-# Citations per month: papers younger than this count as this old, so a brand-new paper
-# with a couple of citations doesn't get an inflated rate
-MIN_MONTHS_SINCE_PUBLISHED = 1.0
-DAYS_PER_MONTH = 30.44
-
 # System prompt for the LLM
 SYSTEM_PROMPT = """You are an expert in technical AI alignment research helping to conduct a shallow review of the field.
 
@@ -66,7 +52,7 @@ Title: {title}
 
 Authors: {authors}
 
-Abstract: {summary}
+Abstract: {abstract}
 
 Categories: {categories}"""
 
@@ -81,7 +67,7 @@ def call_claude_api(paper_info: dict) -> PaperAnnotation | None:
     Call the Claude API with structured output parsing.
 
     Args:
-        paper_info: Dictionary with paper information (title, authors, summary, categories)
+        paper_info: Dictionary with paper information (title, authors, abstract, categories)
 
     Returns:
         Parsed PaperAnnotation object or None if error
@@ -113,61 +99,6 @@ def call_claude_api(paper_info: dict) -> PaperAnnotation | None:
         return None
 
 
-def fetch_citation_counts(arxiv_ids: list[str]) -> list[int | None]:
-    """
-    Look up each paper's total citation count on Semantic Scholar.
-
-    Args:
-        arxiv_ids: arXiv IDs, with or without a version suffix (e.g. "2610.10301v1")
-
-    Returns:
-        Citation counts in the same order as arxiv_ids; None where a paper wasn't found
-        or the lookup failed
-    """
-    headers = {}
-    if api_key := os.getenv("SEMANTIC_SCHOLAR_API_KEY"):
-        headers["x-api-key"] = api_key
-
-    # Strip the version so citations to every version are counted together
-    ids = [f"arXiv:{re.sub(r'v\d+$', '', arxiv_id)}" for arxiv_id in arxiv_ids]
-    counts: list[int | None] = []
-
-    for start in range(0, len(ids), SEMANTIC_SCHOLAR_BATCH_SIZE):
-        batch = ids[start:start + SEMANTIC_SCHOLAR_BATCH_SIZE]
-        papers = None
-        backoff = 2.0
-        for attempt in range(1, SEMANTIC_SCHOLAR_RETRIES + 1):
-            try:
-                response = requests.post(
-                    SEMANTIC_SCHOLAR_BATCH_URL,
-                    params={"fields": "citationCount"},
-                    json={"ids": batch},
-                    headers=headers,
-                    timeout=60,
-                )
-                # Rate limited or server error: back off and retry
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise requests.HTTPError(f"HTTP {response.status_code}")
-                response.raise_for_status()
-                papers = response.json()
-                break
-            except requests.RequestException as e:
-                if attempt == SEMANTIC_SCHOLAR_RETRIES:
-                    log.error(f"Semantic Scholar lookup failed for {len(batch)} papers: {e}")
-                    break
-                log.warning(f"Semantic Scholar request failed ({e}); retrying in {backoff:.0f}s")
-                time.sleep(backoff)
-                backoff *= 2
-
-        if papers is None:
-            counts.extend([None] * len(batch))
-        else:
-            # Results come back in request order, with null for papers Semantic Scholar doesn't know
-            counts.extend(paper["citationCount"] if paper else None for paper in papers)
-
-    return counts
-
-
 def annotate_paper(row: pd.Series) -> PaperAnnotation | None:
     """
     Annotate a single paper.
@@ -181,7 +112,7 @@ def annotate_paper(row: pd.Series) -> PaperAnnotation | None:
     annotation = call_claude_api({
         "title": row["title"],
         "authors": row["authors"],
-        "summary": row["summary"],
+        "abstract": row["abstract"],
         "categories": row["categories"],
     })
 
@@ -191,22 +122,6 @@ def annotate_paper(row: pd.Series) -> PaperAnnotation | None:
         log.info(f"{row['title'][:60]} → {', '.join(annotation.tags)}")
 
     return annotation
-
-
-def citations_per_month(citation_counts: pd.Series, published: pd.Series) -> pd.Series:
-    """
-    Normalize citation counts by paper age: citations divided by months since publication.
-
-    Args:
-        citation_counts: Total citations per paper (may contain missing values)
-        published: Publication dates as YYYY-MM-DD strings
-
-    Returns:
-        Citations per month, rounded to 2 decimal places; missing where the count is missing
-    """
-    days_since_published = (pd.Timestamp.today().normalize() - pd.to_datetime(published)).dt.days
-    months = (days_since_published / DAYS_PER_MONTH).clip(lower=MIN_MONTHS_SINCE_PUBLISHED)
-    return (citation_counts.astype("Float64") / months).round(2)
 
 
 def annotate_papers(input_path: Path, output_path: Path):
@@ -220,12 +135,6 @@ def annotate_papers(input_path: Path, output_path: Path):
     log.info(f"Reading input file: {input_path}")
     df = pd.read_csv(input_path)
     log.info(f"Found {len(df)} papers to annotate")
-
-    # Citation counts first: one batch request per 500 papers
-    log.info("Fetching citation counts from Semantic Scholar...")
-    df["citation_count"] = pd.array(fetch_citation_counts(df["arxiv_id"].astype(str).tolist()), dtype="Int64")
-    df["citations_per_month"] = citations_per_month(df["citation_count"], df["published"])
-    citations_found = df["citation_count"].notna().sum()
 
     df["tags"] = None
     failed = 0
@@ -251,14 +160,13 @@ def annotate_papers(input_path: Path, output_path: Path):
     print_summary("Annotation summary", [
         ("Papers annotated", f"{len(df) - failed}/{len(df)}"),
         ("Failed", str(failed)),
-        ("Citation counts found", f"{citations_found}/{len(df)}"),
     ])
 
 
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Add tags and citation counts to arXiv papers kept by the relevance filter",
+        description="Add tags to arXiv papers kept by the relevance filter",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

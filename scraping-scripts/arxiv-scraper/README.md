@@ -14,21 +14,25 @@ cp .env.example .env
 
 Run each script from this folder, in order. Each script's defaults read the previous step's output.
 
+The annotate and editorial steps still read a single CSV: point `--input` at a year's `results/shortlisted/<year>/arxiv-papers-shortlisted.csv`.
+
 | Step | Command | What it does | Output |
 | --- | --- | --- | --- |
-| 1 | `uv run python src/scrape_arxiv_papers.py` | Searches arXiv (default: CS papers mentioning "ai safety" or "ai alignment", submitted in 2026) | `results/1-arxiv-papers-raw.csv`: all papers found (title, authors, dates, abstract, categories, IDs, PDF link) |
-| 2 | `uv run python src/filter_arxiv_papers.py` | Rates each paper's relevance to technical AI alignment and keeps the highly relevant ones | `results/2-arxiv-papers-rated.csv`: every paper with its relevance rating and reasoning<br>`results/2-arxiv-papers-highly-relevant.csv`: only papers rated "highly relevant" |
-| 3 | `uv run python src/annotate_arxiv_papers.py` | Tags the highly relevant papers and adds citation counts from Semantic Scholar | `results/3-arxiv-papers-annotated.csv`: highly relevant papers with LLM tags, citation counts, and citations per month since publication |
+| 1 | `uv run python src/scrape_arxiv_papers.py` | Searches arXiv (default: cs.AI/LG/CL/CR papers submitted in 2026 matching a list of safety keywords; see `QUERY_TERM_GROUPS` in the script) month by month and looks up citations, venues and author h-indexes on Semantic Scholar. Months already scraped are skipped, so a rerun resumes | `results/raw/<year>/<month>/arxiv-papers-raw.csv` (e.g. `results/raw/2026/jan/arxiv-papers-raw.csv`), one per month: all papers found (title, authors, dates, abstract, categories, IDs, PDF link, comment, journal ref) with citation counts, citations per month since publication, venue, and the highest author h-index from Semantic Scholar |
+| 2 | `uv run python src/filter_arxiv_papers.py` | Rates each paper's relevance to technical AI alignment from 1 to 5, using the abstract plus comment, venue, citation and author signals, and keeps papers rated 4+, month by month. Papers that already have a score aren't rated again | `results/filtered/<year>/<month>/arxiv-papers-rated.csv`: every paper with its relevance score and reasoning<br>`results/filtered/<year>/<month>/arxiv-papers-filtered.csv`: only papers rated at least `--min-score` (default 4) |
+| 2b | `uv run python src/shortlist_arxiv_papers.py` | Compares each month's filtered papers side by side with Claude Opus 5.5 and picks the most important ~9% (about 100–150 a year), best first. Months whose shortlist is newer than their filtered file are skipped | `results/shortlisted/<year>/<month>/arxiv-papers-shortlisted.csv`: the picked papers with `shortlist_rank` and `shortlist_reason`<br>`results/shortlisted/<year>/arxiv-papers-shortlisted.csv`: the whole year's shortlist |
+| 3 | `uv run python src/annotate_arxiv_papers.py` | Tags the highly relevant papers | `results/3-arxiv-papers-annotated.csv`: highly relevant papers with LLM tags |
 | 4 | `uv run python src/generate_taxonomy_and_editorial.py` | Generates a taxonomy and editorial from the annotated papers | `results/4-arxiv-taxonomy-and-editorial.md`: taxonomy, editorial overview, and paper listings |
 
 ### Options
 
 - `scrape_arxiv_papers.py`
-  - `--base-query`: topic query; the date range is added automatically
-  - `--start-date` / `--end-date`: `YYYYMMDDHHMM`
-  - `--query`: full arXiv query, overriding the base query and dates
-  - `--max-results` (default 1000), `--output`, `--page-size`, `--delay`
-- `filter_arxiv_papers.py`: `--input`, `--rated`, `--filtered`, `--model`
+  - `--query`: arXiv query without dates; each month's date range is added automatically
+  - `--start-month` / `--end-month`: `YYYY-MM` (default: January 2026 to the current month)
+  - `--overwrite`: re-scrape months that already have results (months saved before they ended are always re-scraped)
+  - `--max-results` per month (default 5,000), `--output-dir` (default `results/raw`), `--page-size`, `--delay`
+- `filter_arxiv_papers.py`: `--raw-dir` (default `results/raw`), `--output-dir` (default `results/filtered`), `--start-month` / `--end-month`, `--overwrite` (rate every paper again), `--model`, `--min-score` (default 4)
+- `shortlist_arxiv_papers.py`: `--filtered-dir` (default `results/filtered`), `--output-dir` (default `results/shortlisted`), `--share` (default 0.09) or `--per-month N`, `--start-month` / `--end-month`, `--overwrite`, `--model` (default `claude-opus-5-5`), `--effort` (default `high`)
 - `annotate_arxiv_papers.py`: `--input`, `--output`, `--model`
 - `generate_taxonomy_and_editorial.py`: `--input`, `--output`, `--model`
 

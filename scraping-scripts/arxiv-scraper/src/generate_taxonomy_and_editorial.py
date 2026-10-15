@@ -104,7 +104,7 @@ def format_papers_for_prompt(df: pd.DataFrame) -> str:
         paper_text = f"""Paper {idx + 1}:
 Title: {row['title']}
 Authors: {row['authors']}
-Abstract: {row['summary']}
+Abstract: {row['abstract']}
 Existing Agenda: {row.get('agenda', 'N/A')}
 """
         papers.append(paper_text)
@@ -154,13 +154,13 @@ def generate_taxonomy_and_editorial(papers_text: str) -> TaxonomyAndEditorial | 
         return None
 
 
-def generate_paper_tags(paper_title: str, paper_summary: str, taxonomy: str) -> list[str]:
+def generate_paper_tags(paper_title: str, paper_abstract: str, taxonomy: str) -> list[str]:
     """
     Generate taxonomy tags for a single paper based on the overall taxonomy.
     
     Args:
         paper_title: Paper title
-        paper_summary: Paper abstract/summary
+        paper_abstract: Paper abstract
         taxonomy: The generated taxonomy
         
     Returns:
@@ -174,7 +174,7 @@ Provide 2-5 specific tags from the taxonomy that best describe this paper."""
     
     user_prompt = f"""Paper Title: {paper_title}
 
-Abstract: {paper_summary}
+Abstract: {paper_abstract}
 
 What taxonomy tags apply to this paper?"""
     
@@ -244,13 +244,13 @@ def create_output_document(df: pd.DataFrame, taxonomy: str, editorial: str,
     for idx, row in df.iterrows():
         title = row['title']
         pdf_url = row['pdf_url']
-        summary = row['summary']
+        abstract = row['abstract']
         # tags = row.get('taxonomy_tags', 'N/A')  # per-paper tagging disabled
         
         lines.append(f"### {title}")
         lines.append("")
         lines.append(f"- Link: {pdf_url}")
-        lines.append(f"- Summary: {summary}")
+        lines.append(f"- Abstract: {abstract}")
         # lines.append(f"- Taxonomy tags: {tags}")
         lines.append("")  # Blank line between papers
     
@@ -291,7 +291,7 @@ def process_papers(input_csv: Path, output_md: Path):
     # taxonomy_tags = []
     # for idx, row in df.iterrows():
     #     log.info(f"Tagging paper {idx + 1}/{len(df)}: {row['title'][:60]}...")
-    #     tags = generate_paper_tags(row['title'], row['summary'], result.taxonomy)
+    #     tags = generate_paper_tags(row['title'], row['abstract'], result.taxonomy)
     #     taxonomy_tags.append(", ".join(tags) if tags else "N/A")
     #
     # df['taxonomy_tags'] = taxonomy_tags
