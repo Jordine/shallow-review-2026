@@ -2,9 +2,22 @@
 
 Scripts to search arXiv for AI safety/alignment papers, filter them for relevance and tag them with an LLM, and generate a taxonomy and editorial overview.
 
+### Funnel
+
+The pipeline narrows arXiv down in stages, each run month by month. Counts are from the January to October 9, 2026 run; full-year figures are rough extrapolations.
+
+| Stage | How | Per month | Jan–Oct 9, 2026 | Full year (approx.) |
+| --- | --- | --- | --- | --- |
+| arXiv | All papers in cs.AI, cs.LG, cs.CL and cs.CR | ~8,000–13,000 | ~100,000 | ~130,000 |
+| 1. Scrape | Keyword search (`QUERY_TERM_GROUPS`): about 12% of those papers, and ~70% of the arXiv papers the 2025 shallow review cited | ~1,000–1,800 | 12,183 | ~15,000 |
+| 2. Filter | Claude Haiku rates each paper 1–5 on its own; keeps 4+ (~13%) | ~100–270 | 1,537 | ~2,000 |
+| 2b. Shortlist | Claude Opus compares each month's filtered papers side by side; keeps the best ~9% | ~8–24 | 135 | ~170 |
+
+Monthly volume varies a lot: May (NeurIPS deadline) and September (ICLR deadline) are the busiest months. Keyword-matched papers roughly doubled from 2025 to 2026, faster than arXiv overall (~40%).
+
 ### Setup
 
-Steps 2–4 call Claude: step 2 uses `claude-haiku-5-5` and steps 3–4 use `claude-sonnet-5-5` by default (change it with `--model`). Copy `.env.example` to `.env` in this folder and add your Anthropic API key:
+Steps 2–4 call Claude: step 2 uses `claude-haiku-5-5`, step 2b uses `claude-opus-5-5`, and steps 3–4 use `claude-sonnet-5-5` by default (change it with `--model`). Copy `.env.example` to `.env` in this folder and add your Anthropic API key:
 
 ```bash
 cp .env.example .env
