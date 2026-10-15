@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """
 ArXiv Relevance Filter Script
-Uses Claude to rate arXiv papers by relevance to technical AI alignment and keeps the highly relevant ones.
+Uses Claude to rate arXiv papers from 1 to 5 by relevance to technical AI alignment and keeps the ones at or above a
+minimum score, month by month.
+
+Basic usage (from the arxiv-scraper folder):
+    uv run python src/filter_arxiv_papers.py
+For each results/raw/<year>/<month>/arxiv-papers-raw.csv, writes results/filtered/<year>/<month>/ with
+arxiv-papers-rated.csv (every paper with its score) and arxiv-papers-filtered.csv (papers rated at least --min-score).
+Papers that already have a score are not rated again, so reruns only rate new papers.
 """
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import anthropic
@@ -13,6 +21,8 @@ from pydantic import BaseModel
 from typing import Literal
 from dotenv import load_dotenv
 from terminal import setup_logging, progress_bar, print_summary
+from semantic_scholar import DAYS_PER_MONTH
+from scrape_arxiv_papers import MONTH_FILENAME as RAW_FILENAME
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,16 +34,30 @@ log = setup_logging("arxiv-filter")
 client = anthropic.Anthropic()
 
 # Default configuration
-DEFAULT_INPUT_FILE = "results/1-arxiv-papers-raw.csv"
-DEFAULT_RATED_OUTPUT = "results/2-arxiv-papers-rated.csv"
-DEFAULT_FILTERED_OUTPUT = "results/2-arxiv-papers-highly-relevant.csv"
+DEFAULT_RAW_DIR = "results/raw"
+DEFAULT_OUTPUT_DIR = "results/filtered"
+RATED_FILENAME = "arxiv-papers-rated.csv"
+FILTERED_FILENAME = "arxiv-papers-filtered.csv"
 DEFAULT_MODEL = "claude-haiku-5-5"
-BATCH_SIZE = 10  # Papers rated in parallel per batch
+BATCH_SIZE = 30  # Papers rated in parallel per batch
+DEFAULT_MIN_SCORE = 4  # Papers rated at least this are kept
+
+# Columns added by scrape_arxiv_papers.py that the prompt shows the model
+REQUIRED_METADATA_COLUMNS = [
+    "comment", "journal_ref", "citation_count", "citations_per_month",
+    "venue", "max_author_h_index", "max_h_index_author",
+]
 
 # System prompt for the LLM
-SYSTEM_PROMPT = """You are an expert in technical AI alignment research helping to conduct a 2025 shallow review of the field.
+SYSTEM_PROMPT = """You are an expert in technical AI alignment research helping to conduct a 2026 shallow review of the field.
 
-Your task is to analyze arXiv papers and determine their relevance to technical AI alignment work. We are specifically interested in papers that:
+Your task is to analyze arXiv papers and determine their relevance to technical AI alignment work.
+
+We are conducting a survey of the field of AI safety and AI alignment that will be published on LessWrong. Our goal is to find papers that:
+- Make novel and interesting contributions to the field of AI safety such as improving AI alignment techniques, advancing the field of interpretability, developing new AI safety techniques, or discovering novel phenomena in models.
+- Contributions to an existing taxonomy or vanguard contributions that establish a new one.
+
+We are specifically interested in papers that are in the following categories:
 
 **Core Technical AI Alignment Areas:**
 - AI safety and alignment methodologies (RLHF, RLAIF, constitutional AI, etc.)
@@ -60,14 +84,46 @@ Your task is to analyze arXiv papers and determine their relevance to technical 
 - Generic ML papers not specifically addressing alignment
 - Applications of AI in specific domains (unless they reveal alignment insights)
 - Papers that only tangentially mention safety/alignment
-- Purely philosophical discussions without technical content
 
-For each paper, rate its relevance as "not relevant", "moderately relevant", or "highly relevant":
-- "highly relevant": Core technical alignment work with novel contributions
-- "moderately relevant": Related to alignment but peripheral or applied
-- "not relevant": Not about AI alignment or safety
+Papers that are highly relevant:
+- Papers in the taxonomy described
+- Papers that are about AI alignment or AI safety but are novel enough to be part of some new taxonomy that is not part of the ones above (e.g. multi-agent safety, model welfare, human-AI coevolution)
 
-Be selective - only rate papers as "highly relevant" if they make meaningful technical contributions to AI alignment."""
+Papers I'm not interested in:
+- FAT (Fairness, Accountability, and Transparency) AI papers that are not relevant to existential AI safety
+- AI safety techniques that are narrowly focused on a specific industry like avoiding mistakes in medical classification
+- Generic AI capabilities papers focused on making models more accurate or capable on a specific task. Exceptions: AGI benchmarks that measure broad capabilities progress
+- Papers too focused on short-term risks like producing toxic content, bias, or addiction
+
+For each paper, rate its relevance on a score of 1 to 5 where 1 is not relevant and 5 is highly relevant and provide reasoning for your rating.
+
+Besides the abstract, you will see metadata that can adjust your rating by at most one point. Judge relevance from the abstract first; never raise an off-topic paper because of its metadata.
+- Comment and venue: acceptance at a main ML venue (NeurIPS, ICML, ICLR) or a released code repository is a positive signal. Affiliations mentioned in the comment (e.g. a frontier lab or safety organisation) are a mild positive.
+- Citations: given as citations per month and percentile within this set. Only treat this as informative for papers older than 3 months; a new paper with zero citations is not a negative signal. High citations alone do not make a paper relevant.
+- Authors: upweight papers by recognizable AI safety researchers (e.g. Yoshua Bengio, Alex Turner, Stephen Casper, Neel Nanda). Unknown authors are not a negative.
+- Top author h-index: the highest h-index among the authors. A high h-index means an established researcher, but not necessarily one in AI safety, and h-indexes for common names may be wrong; treat it as a weak signal.
+
+Examples:
+- Paper: "Frontier LLMs strategically comply with training objectives they disagree with to avoid having their values modified"
+- Rating: 5
+- Reasoning: The paper gives empirical evidence of a novel and important phenomenon, deceptive alignment, in current frontier models. This bears directly on whether alignment training can be trusted and opens new research directions.
+
+- Paper: "A variant of DPO that reduces reward over-optimization on standard preference datasets"
+- Rating: 4
+- Reasoning: The paper addresses reward hacking in preference learning, a core alignment area, with a solid empirical improvement. However, it is an incremental refinement of an existing method rather than a new technique or finding.
+
+- Paper: "Measuring sycophancy in LLMs giving medical advice when users push back on correct answers"
+- Rating: 3
+- Reasoning: The paper is framed around a specific domain (medicine), but sycophancy is a general alignment failure mode and the findings may carry over to other settings. It is moderately relevant, not a core contribution.
+
+- Paper: "A lightweight classifier for filtering toxic language from customer service chatbot outputs"
+- Rating: 2
+- Reasoning: The paper is safety-adjacent but focuses on short-term content moderation for a specific industry application. It offers little insight into alignment or risks from advanced AI.
+
+- Paper: "A new fine-tuning method that improves LLM accuracy on math reasoning benchmarks"
+- Rating: 1
+- Reasoning: This is pure capabilities research aimed at improving performance on a specific task, with no safety or alignment implications.
+"""
 
 USER_PROMPT_TEMPLATE = """Analyze this arXiv paper for relevance to technical AI alignment:
 
@@ -75,17 +131,29 @@ Title: {title}
 
 Authors: {authors}
 
-Abstract: {summary}
+Abstract: {abstract}
 
 Categories: {categories}
+
+Comment: {comment}
+
+Journal ref: {journal_ref}
+
+Venue: {venue}
+
+Published: {published} ({months_old} months ago)
+
+Citations: {citations}
+
+Top author h-index: {top_author}
 
 Provide a relevance rating."""
 
 
 class PaperRelevance(BaseModel):
     """Structured output for a paper's relevance rating."""
-    relevance: Literal["not relevant", "moderately relevant", "highly relevant"]
-    reasoning: str  # Brief explanation of the rating
+    reasoning: str  # Brief explanation of the rating, written before the score
+    relevance: Literal[1, 2, 3, 4, 5]  # 1 = not relevant, 5 = highly relevant
 
 
 def call_claude_api(paper_info: dict, response_format: type[BaseModel]) -> PaperRelevance | None:
@@ -93,7 +161,7 @@ def call_claude_api(paper_info: dict, response_format: type[BaseModel]) -> Paper
     Call the Claude API with structured output parsing.
 
     Args:
-        paper_info: Dictionary with paper information (title, authors, summary, categories)
+        paper_info: Dictionary with the fields in USER_PROMPT_TEMPLATE
         response_format: The Pydantic model class for response parsing
 
     Returns:
@@ -101,12 +169,7 @@ def call_claude_api(paper_info: dict, response_format: type[BaseModel]) -> Paper
     """
     try:
         # Format the user prompt with the paper information
-        user_message = USER_PROMPT_TEMPLATE.format(
-            title=paper_info["title"],
-            authors=paper_info["authors"],
-            summary=paper_info["summary"],
-            categories=paper_info["categories"]
-        )
+        user_message = USER_PROMPT_TEMPLATE.format(**paper_info)
 
         # No refusal fallback: Claude Haiku 5.5 doesn't support server-side fallbacks
         response = client.messages.parse(
@@ -132,6 +195,24 @@ def call_claude_api(paper_info: dict, response_format: type[BaseModel]) -> Paper
         return None
 
 
+def format_citations(row: pd.Series) -> str:
+    """
+    Describe a paper's citations for the prompt: total, per month, and percentile within the input set.
+
+    Args:
+        row: DataFrame row with citation_count, citations_per_month and citation_top_percent
+
+    Returns:
+        A short description, or "unknown" if Semantic Scholar had no count
+    """
+    if pd.isna(row["citation_count"]):
+        return "unknown"
+    return (
+        f"{int(row['citation_count'])} total, {row['citations_per_month']:.2f}/month "
+        f"(top {int(row['citation_top_percent'])}% of this set)"
+    )
+
+
 def rate_paper(row: pd.Series) -> dict:
     """
     Rate a single paper's relevance.
@@ -145,8 +226,18 @@ def rate_paper(row: pd.Series) -> dict:
     paper_info = {
         "title": row["title"],
         "authors": row["authors"],
-        "summary": row["summary"],
-        "categories": row["categories"]
+        "abstract": row["abstract"],
+        "categories": row["categories"],
+        "comment": row["comment"] if pd.notna(row["comment"]) else "N/A",
+        "journal_ref": row["journal_ref"] if pd.notna(row["journal_ref"]) else "N/A",
+        "published": row["published"],
+        "months_old": f"{row['months_old']:.1f}",
+        "citations": format_citations(row),
+        "venue": row["venue"] if pd.notna(row["venue"]) else "N/A",
+        "top_author": (
+            f"{int(row['max_author_h_index'])} ({row['max_h_index_author']})"
+            if pd.notna(row["max_author_h_index"]) else "unknown"
+        ),
     }
 
     analysis = call_claude_api(paper_info, PaperRelevance)
@@ -154,11 +245,11 @@ def rate_paper(row: pd.Series) -> dict:
     if analysis is None:
         log.warning(f"Failed to rate, skipping: {row['title'][:60]}")
         return {
-            "relevance": "not relevant",
+            "relevance": None,
             "reasoning": "Error during analysis"
         }
 
-    log.info(f"{analysis.relevance}: {row['title'][:60]}")
+    log.info(f"{analysis.relevance}/5: {row['title'][:60]}")
 
     return {
         "relevance": analysis.relevance,
@@ -166,52 +257,85 @@ def rate_paper(row: pd.Series) -> dict:
     }
 
 
-def process_results(input_path: Path, rated_output: Path, filtered_output: Path):
+def find_months(raw_dir: Path) -> list[tuple[datetime, Path]]:
     """
-    Process arXiv results: rate each paper, then filter.
+    Find the scraped months under raw_dir (raw_dir/<year>/<month>/arxiv-papers-raw.csv).
+
+    Returns:
+        (first day of month, month folder relative to raw_dir) pairs, earliest first
+    """
+    months = []
+    for path in raw_dir.glob(f"*/*/{RAW_FILENAME}"):
+        month_folder = path.parent.relative_to(raw_dir)
+        year, month = month_folder.parts
+        months.append((datetime.strptime(f"{year} {month}", "%Y %b"), month_folder))
+    return sorted(months)
+
+
+def rate_month(raw_path: Path, out_dir: Path, min_score: int, rerate: bool) -> dict:
+    """
+    Rate one month's papers and write its rated and filtered CSVs. Scores from a previous run are reused unless
+    rerate is set, so only new (or previously failed) papers are sent to Claude.
 
     Args:
-        input_path: Path to input CSV file
-        rated_output: Path for output CSV with every paper and its rating
-        filtered_output: Path for filtered (highly relevant only) output CSV
+        raw_path: The month's raw CSV
+        out_dir: The month's folder under the filtered output directory
+        min_score: Lowest relevance score (1-5) to keep
+        rerate: Ignore previous scores and rate every paper again
+
+    Returns:
+        Counts for the summary table
     """
-    # Read input CSV
-    log.info(f"Reading input file: {input_path}")
-    df = pd.read_csv(input_path)
-    log.info(f"Found {len(df)} papers to rate")
+    df = pd.read_csv(raw_path, dtype={"arxiv_id": str})
+    missing = [column for column in REQUIRED_METADATA_COLUMNS if column not in df.columns]
+    if missing:
+        log.error(f"{raw_path} is missing columns {missing}; re-run src/scrape_arxiv_papers.py to add them.")
+        return {"papers": len(df), "rated_now": 0, "failed": len(df), "kept": 0}
 
-    # Initialize new columns
-    df["relevance"] = None
+    # Prompt context the model can't work out itself: paper age, and where its citation rate ranks in this month
+    days_since_published = (pd.Timestamp.today().normalize() - pd.to_datetime(df["published"])).dt.days
+    df_context = pd.DataFrame({
+        "months_old": days_since_published / DAYS_PER_MONTH,
+        "citation_top_percent": (df["citations_per_month"].rank(pct=True, ascending=False) * 100).clip(lower=1).round(),
+    })
+
+    # Start from previous scores, if any
+    df["relevance"] = pd.array([None] * len(df), dtype="Int64")
     df["reasoning"] = None
+    rated_path = out_dir / RATED_FILENAME
+    if rated_path.exists() and not rerate:
+        previous = pd.read_csv(rated_path, dtype={"arxiv_id": str}).dropna(subset=["relevance"]).set_index("arxiv_id")
+        known = df["arxiv_id"].isin(previous.index)
+        df.loc[known, "relevance"] = df.loc[known, "arxiv_id"].map(previous["relevance"]).astype("Int64")
+        df.loc[known, "reasoning"] = df.loc[known, "arxiv_id"].map(previous["reasoning"])
 
-    # Rate papers in batches: fire off one API call per paper in parallel, then gather the batch's results
-    rows = [row for _, row in df.iterrows()]
-    with progress_bar() as progress, ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
-        task = progress.add_task("Rating papers", total=len(df))
-        for start in range(0, len(rows), BATCH_SIZE):
-            batch = rows[start:start + BATCH_SIZE]
-            # map() returns results in input order and re-raises a worker's exception (e.g. a bad API key)
-            for row, analysis_result in zip(batch, executor.map(rate_paper, batch)):
-                df.at[row.name, "relevance"] = analysis_result["relevance"]
-                df.at[row.name, "reasoning"] = analysis_result["reasoning"]
-            progress.advance(task, len(batch))
+    # Rate the rest in batches: fire off one API call per paper in parallel, then gather the batch's results
+    todo = df.index[df["relevance"].isna()]
+    rows = [row for _, row in pd.concat([df, df_context], axis=1).loc[todo].iterrows()]
+    if rows:
+        with progress_bar() as progress, ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+            task = progress.add_task("Rating papers", total=len(rows))
+            for start in range(0, len(rows), BATCH_SIZE):
+                batch = rows[start:start + BATCH_SIZE]
+                # map() returns results in input order and re-raises a worker's exception (e.g. a bad API key)
+                for row, analysis_result in zip(batch, executor.map(rate_paper, batch)):
+                    df.at[row.name, "relevance"] = analysis_result["relevance"]
+                    df.at[row.name, "reasoning"] = analysis_result["reasoning"]
+                progress.advance(task, len(batch))
 
-    # Save rated results
-    rated_output.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(rated_output, index=False)
-    log.info(f"Saved rated results to: {rated_output}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(rated_path, index=False)
+    kept_df = df[df["relevance"] >= min_score]
+    kept_df.to_csv(out_dir / FILTERED_FILENAME, index=False)
+    log.info(f"Saved {len(kept_df)}/{len(df)} papers rated {min_score}+ to {out_dir / FILTERED_FILENAME}")
 
-    # Filter for highly relevant papers
-    highly_relevant_df = df[df["relevance"] == "highly relevant"].copy()
-    highly_relevant_df.to_csv(filtered_output, index=False)
-    log.info(f"Saved {len(highly_relevant_df)} highly relevant papers to: {filtered_output}")
-
-    # Print summary statistics
-    rows = [("Total papers rated", str(len(df)))]
-    for relevance in ["highly relevant", "moderately relevant", "not relevant"]:
-        count = (df["relevance"] == relevance).sum()
-        rows.append((relevance.capitalize(), f"{count} ({count / len(df) * 100:.1f}%)"))
-    print_summary("Relevance summary", rows)
+    return {
+        "papers": len(df),
+        "rated_now": len(rows),
+        "failed": int(df["relevance"].isna().sum()),
+        "kept": len(kept_df),
+        **{f"score_{score}": int((df["relevance"] == score).sum()) for score in range(1, 6)},
+    }
 
 
 def parse_arguments():
@@ -221,36 +345,61 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Use default files
+  # Rate every scraped month (only papers without a score yet)
   python src/filter_arxiv_papers.py
 
-  # Specify custom input and output files
-  python src/filter_arxiv_papers.py --input my_results.csv --rated my_rated.csv --filtered my_filtered.csv
+  # Only some months
+  python src/filter_arxiv_papers.py --start-month 2026-01 --end-month 2026-03
+
+  # Rate everything again from scratch
+  python src/filter_arxiv_papers.py --overwrite
 
   # Process with custom model
   python src/filter_arxiv_papers.py --model claude-sonnet-5-5
+
+  # Keep only papers rated 5
+  python src/filter_arxiv_papers.py --min-score 5
         """
     )
 
     parser.add_argument(
-        "--input",
+        "--raw-dir",
         type=str,
-        default=DEFAULT_INPUT_FILE,
-        help=f"Input CSV file with raw arXiv results (default: {DEFAULT_INPUT_FILE})"
+        default=DEFAULT_RAW_DIR,
+        help=f"Folder of per-month raw results from scrape_arxiv_papers.py (default: {DEFAULT_RAW_DIR})"
     )
 
     parser.add_argument(
-        "--rated",
+        "--output-dir",
         type=str,
-        default=DEFAULT_RATED_OUTPUT,
-        help=f"Output CSV file with every paper and its rating (default: {DEFAULT_RATED_OUTPUT})"
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Folder for per-month rated and filtered results (default: {DEFAULT_OUTPUT_DIR})"
     )
 
     parser.add_argument(
-        "--filtered",
+        "--start-month",
         type=str,
-        default=DEFAULT_FILTERED_OUTPUT,
-        help=f"Output CSV file for highly relevant results (default: {DEFAULT_FILTERED_OUTPUT})"
+        help="First month to rate, YYYY-MM (default: earliest scraped month)"
+    )
+
+    parser.add_argument(
+        "--end-month",
+        type=str,
+        help="Last month to rate, YYYY-MM (default: latest scraped month)"
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Ignore previous scores and rate every paper again"
+    )
+
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        choices=range(1, 6),
+        default=DEFAULT_MIN_SCORE,
+        help=f"Lowest relevance score (1-5) to keep (default: {DEFAULT_MIN_SCORE})"
     )
 
     parser.add_argument(
@@ -271,21 +420,32 @@ def main():
     global DEFAULT_MODEL
     DEFAULT_MODEL = args.model
 
-    # Convert paths
-    input_path = Path(args.input)
-    rated_output = Path(args.rated)
-    filtered_output = Path(args.filtered)
-
-    # Check if input file exists
-    if not input_path.exists():
-        log.error(f"Input file not found: {input_path}")
-        log.error("Please run src/scrape_arxiv_papers.py first to generate arXiv results.")
+    raw_dir = Path(args.raw_dir)
+    months = find_months(raw_dir)
+    if args.start_month:
+        months = [(m, folder) for m, folder in months if m >= datetime.strptime(args.start_month, "%Y-%m")]
+    if args.end_month:
+        months = [(m, folder) for m, folder in months if m <= datetime.strptime(args.end_month, "%Y-%m")]
+    if not months:
+        log.error(f"No scraped months found in {raw_dir}. Please run src/scrape_arxiv_papers.py first.")
         return
 
-    # Process results
-    log.info("Starting relevance rating...")
-    process_results(input_path, rated_output, filtered_output)
-    log.info("Rating complete!")
+    log.info(f"Rating {len(months)} month(s) with {DEFAULT_MODEL}, keeping papers rated {args.min_score}+")
+    summary = []
+    for month, folder in months:
+        log.info(f"{month:%Y-%m}: rating papers in {raw_dir / folder / RAW_FILENAME}")
+        counts = rate_month(raw_dir / folder / RAW_FILENAME, Path(args.output_dir) / folder, args.min_score, args.overwrite)
+        summary.append((f"{month:%Y-%m}", counts))
+
+    rows = [
+        (month, f"{c['kept']}/{c['papers']} kept ({c['rated_now']} rated now"
+                + (f", {c['failed']} failed)" if c["failed"] else ")"))
+        for month, c in summary
+    ]
+    total_kept = sum(c["kept"] for _, c in summary)
+    total_papers = sum(c["papers"] for _, c in summary)
+    rows.append(("Total", f"{total_kept}/{total_papers} kept ({sum(c['rated_now'] for _, c in summary)} rated now)"))
+    print_summary(f"Relevance filter ({args.min_score}+)", rows)
 
 
 if __name__ == "__main__":
