@@ -1,0 +1,148 @@
+# The facets the shortlisted papers are tagged along, and each facet's allowed tags.
+# Each facet is one way of slicing the research; the site lets you group by one facet and split by another.
+# `multi: false` facets get exactly one tag per paper; `multi: true` facets get any number (including none).
+# The '2025 agenda' facet is not listed here: its tags come from input/taxonomy-2025.yaml.
+version: 2
+
+facets:
+  - id: evidence
+    name: Evidence
+    multi: false
+    description: The strongest kind of support the paper offers for its main claim.
+    tags:
+      proven: Formal proof or mathematical derivation.
+      tested: Controlled experiment or intervention with a comparison (ablation, baseline, held-out test).
+      measured: Systematic measurement or benchmark of existing systems, without an intervention.
+      observed: Reports instances or case studies of behaviour, without systematic measurement.
+      argued: Conceptual argument, position or framework, without new data.
+      surveyed: Literature review or synthesis of other work.
+
+  - id: contribution
+    name: Scientific
+    multi: true
+    primary: true  # one tag is marked as the paper's main contribution
+    description: What kind of scientific contribution the paper makes.
+    tags:
+      notable phenomenon: Reports a new or surprising model behaviour.
+      explanation: Explains why or how a known behaviour arises (mechanism, cause).
+      measurement: Quantifies how often, how much or how well something happens.
+      new method: Introduces a new technique for training, steering, monitoring, attacking or defending.
+      benchmark: Releases a benchmark, dataset, environment or eval suite.
+      tool: Releases software or infrastructure others can use.
+      theory: Formal model, definitions or theorems.
+      critique: Shows that a method, benchmark or claim is flawed or weaker than believed.
+      replication: Reproduces or stress-tests prior results.
+      negative result: Reports that something expected to work does not.
+      position: Argues for a research direction, agenda or policy.
+      synthesis: Organises existing work into a framework or survey.
+
+  - id: paper_type
+    name: Paper type
+    multi: false
+    description: The form of the paper.
+    tags:
+      empirical study: Experiments on models to answer a research question.
+      method paper: Proposes and evaluates a technique.
+      benchmark paper: Mainly about a benchmark, dataset or environment.
+      theory paper: Mainly formal or mathematical.
+      position paper: Mainly argument or agenda.
+      survey: Review of a field.
+      incident report: Analysis of a real-world deployment incident or system card finding.
+      technical report: Lab or institute report on a model, framework or evaluation programme.
+
+  - id: concept
+    name: Concept
+    multi: true
+    description: The safety-relevant behaviours, risks and properties the paper is about (pick all that are central, usually 1-4).
+    tags:
+      reward hacking: Exploiting flaws in rewards, graders or tests.
+      specification gaming: Satisfying the letter but not the intent of an objective.
+      deception: Models producing beliefs they know to be false.
+      scheming: Covert pursuit of misaligned goals, alignment faking.
+      sandbagging: Strategic underperformance.
+      evaluation awareness: Models recognising tests and behaving differently.
+      situational awareness: Models' knowledge of themselves and their circumstances.
+      sycophancy: Telling users what they want to hear.
+      emergent misalignment: Broad misalignment arising from narrow training.
+      persona: Model character, identity, persona drift.
+      introspection: Models reporting on their own internal states.
+      model welfare: Moral status and wellbeing of models.
+      cot faithfulness: Whether reasoning traces reflect the real computation.
+      cot monitorability: Whether reasoning can be used to catch misbehaviour.
+      steganography: Hidden information in model outputs.
+      latent reasoning: Reasoning that is not verbalised.
+      power seeking: Acquiring resources, influence or self-preservation.
+      self-exfiltration: Escaping control, self-replication, weight theft by the model.
+      sabotage: Deliberately undermining tasks or safety work.
+      collusion: Coordination between AI systems against oversight.
+      jailbreaks: Inputs that bypass safety training.
+      prompt injection: Instructions smuggled in through tool outputs or documents.
+      backdoors: Hidden triggers implanted in training data or weights.
+      data poisoning: Corrupting training data.
+      misuse: Harmful use by people (cyber, bio, persuasion, fraud).
+      dangerous capabilities: Capabilities that could cause severe harm.
+      honesty: Truthfulness, calibration, admitting uncertainty.
+      refusals: When and how models decline requests.
+      value alignment: Which values models hold and how they trade off.
+      goal misgeneralization: Learning the wrong goal that fits training.
+      corrigibility: Accepting correction and shutdown.
+      oversight: Humans or AIs supervising more capable AIs.
+      control: Safety measures that hold even if the model is misaligned.
+      unlearning: Removing knowledge or capabilities from models.
+      robustness: Reliability under distribution shift or attack.
+      multi-agent risk: Risks arising from many interacting AI systems.
+      societal impact: Effects on people, institutions, economy or power.
+      governance: Policy, standards, regulation, safety frameworks.
+
+  - id: method
+    name: Method
+    multi: true
+    description: The main research methods used (pick all that are central, usually 1-3).
+    tags:
+      behavioural evals: Measuring behaviour from inputs and outputs.
+      red teaming: Adversarially searching for failures.
+      agentic environments: Running models as agents in sandboxes or simulated environments.
+      model organisms: Deliberately training a model to have a property in order to study it.
+      fine-tuning: Supervised fine-tuning as an experimental lever.
+      rl training: Reinforcement learning as an experimental lever.
+      pretraining data: Changing or studying pretraining data.
+      probing: Linear or other probes on activations.
+      sparse autoencoders: SAEs, transcoders and related dictionary methods.
+      circuit analysis: Attribution graphs, circuits, causal interventions on components.
+      steering: Activation steering or representation engineering.
+      weight analysis: Studying or editing weights directly, model diffing.
+      llm monitors: Using a model to monitor another model.
+      cot analysis: Reading or intervening on chains of thought.
+      formal methods: Proofs, verification, formal models.
+      game theory: Game-theoretic or economic modelling.
+      human studies: Experiments with human participants.
+      scaling analysis: Trends across model size, compute or time.
+      literature analysis: Reviewing or classifying existing work.
+
+  - id: substrate
+    name: Substrate
+    multi: true
+    description: What kind of system the work is done on.
+    tags:
+      frontier closed: Frontier proprietary models via API (GPT, Claude, Gemini, Grok).
+      frontier internal: Internal or unreleased frontier models, lab-only access.
+      open weights large: Open-weight models of roughly 30B parameters or more.
+      open weights small: Open-weight models under roughly 30B parameters.
+      toy models: Small purpose-built or synthetic models.
+      agents: Models wrapped in agent scaffolds with tools.
+      multimodal: Vision, audio or video models.
+      no system: Theory, argument or policy with no experiments on models.
+
+  - id: developer
+    name: About (developer)
+    multi: true
+    description: Whose models are studied or discussed, if specific developers' models are central to the paper.
+    tags:
+      OpenAI: GPT and o-series models.
+      Anthropic: Claude models.
+      Google DeepMind: Gemini and Gemma models.
+      Meta: Llama models.
+      xAI: Grok models.
+      DeepSeek: DeepSeek models.
+      Alibaba: Qwen models.
+      Mistral: Mistral models.
