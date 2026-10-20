@@ -1,0 +1,5 @@
+# Netlify CLI link state
+.netlify/
+
+# macOS folder metadata
+.DS_Store
