@@ -2,7 +2,7 @@
 # Each facet is one way of slicing the research; the site lets you group by one facet and split by another.
 # `multi: false` facets get exactly one tag per paper; `multi: true` facets get any number (including none).
 # The '2025 agenda' facet is not listed here: its tags come from input/taxonomy-2025.yaml.
-version: 4
+version: 5
 
 facets:
   - id: evidence
@@ -99,7 +99,7 @@ facets:
       monitor evasion: Models evading or obfuscating against monitors, probes or classifiers, including chain-of-thought obfuscation.
       self-fulfilling misalignment: Misalignment learned from text about AI, such as discourse or stories about misaligned AI in training data.
       automated ai r&d: AI systems doing AI or safety research.
-      eval validity: Whether benchmarks and evaluations measure what they claim.
+      eval validity: Shows that existing benchmarks, evals or model organisms are flawed, hackable or misleading. Not for papers that just run or introduce an eval.
       training gaming: Models resisting or steering their own training (exploration hacking, gradient hacking).
       tamper resistance: Safeguards that survive fine-tuning or weight access, especially for open-weight models.
 
