@@ -134,7 +134,7 @@ details p { margin: 8px 0 0; max-width: 900px; }
       <div class="field"><label for="split">Split by</label><select id="split"></select></div>
       <label class="check"><input type="checkbox" id="secondary"> count secondary scientific tags</label>
       <div class="field grow"><label for="filter">Filter</label>
-        <input type="text" id="filter" placeholder="+concept:reward_hacking -substrate:no_system" autocomplete="off" spellcheck="false"></div>
+        <input type="text" id="filter" placeholder="+concept:reward_hacking -evidence:argued" autocomplete="off" spellcheck="false"></div>
     </div>
     <p class="help">Click a tag to require it; shift-click to exclude it. Type <code>+tag</code>, <code>-tag</code>,
       <code>facet:tag</code>, or plain words to search titles and summaries. Click a grid cell to filter to it.</p>
@@ -155,9 +155,8 @@ const FIXED_ORDER = new Set(["evidence", "paper_type", "month"]);  // facets who
 const PRESETS = [
   ["Overview", "agenda_2025", "evidence"], ["Evidence", "evidence", "contribution"],
   ["Scientific", "contribution", "paper_type"], ["Concepts", "concept", "method"],
-  ["Methods", "method", "substrate"], ["Last year's agendas", "agenda_2025", ""],
+  ["Methods", "method", "evidence"], ["Last year's agendas", "agenda_2025", ""],
   ["By month", "month", "paper_type"],
-  ["About developer", "developer", "concept"],
 ];
 const state = { group: "agenda_2025", split: "", secondary: false, filter: "" };
 
