@@ -2,7 +2,7 @@
 # Each facet is one way of slicing the research; the site lets you group by one facet and split by another.
 # `multi: false` facets get exactly one tag per paper; `multi: true` facets get any number (including none).
 # The '2025 agenda' facet is not listed here: its tags come from input/taxonomy-2025.yaml.
-version: 2
+version: 5
 
 facets:
   - id: evidence
@@ -86,13 +86,22 @@ facets:
       value alignment: Which values models hold and how they trade off.
       goal misgeneralization: Learning the wrong goal that fits training.
       corrigibility: Accepting correction and shutdown.
-      oversight: Humans or AIs supervising more capable AIs.
+      scalable oversight: Supervising AIs more capable than the supervisor (debate, weak-to-strong, amplification).
+      monitoring: Detecting misbehaviour at run time or in transcripts with monitors, probes or classifiers.
       control: Safety measures that hold even if the model is misaligned.
       unlearning: Removing knowledge or capabilities from models.
       robustness: Reliability under distribution shift or attack.
       multi-agent risk: Risks arising from many interacting AI systems.
       societal impact: Effects on people, institutions, economy or power.
       governance: Policy, standards, regulation, safety frameworks.
+      training-data generalization: How training documents or fine-tuning data shape later behaviour (out-of-context learning, alignment pretraining, midtraining).
+      alignment auditing: Finding hidden behaviours, goals or secret knowledge in a model.
+      monitor evasion: Models evading or obfuscating against monitors, probes or classifiers, including chain-of-thought obfuscation.
+      self-fulfilling misalignment: Misalignment learned from text about AI, such as discourse or stories about misaligned AI in training data.
+      automated ai r&d: AI systems doing AI or safety research.
+      eval validity: Shows that existing benchmarks, evals or model organisms are flawed, hackable or misleading. Not for papers that just run or introduce an eval.
+      training gaming: Models resisting or steering their own training (exploration hacking, gradient hacking).
+      tamper resistance: Safeguards that survive fine-tuning or weight access, especially for open-weight models.
 
   - id: method
     name: Method
@@ -104,7 +113,7 @@ facets:
       agentic environments: Running models as agents in sandboxes or simulated environments.
       model organisms: Deliberately training a model to have a property in order to study it.
       fine-tuning: Supervised fine-tuning as an experimental lever.
-      rl training: Reinforcement learning as an experimental lever.
+      rl post-training: Reinforcement learning post-training as an experimental lever.
       pretraining data: Changing or studying pretraining data.
       probing: Linear or other probes on activations.
       sparse autoencoders: SAEs, transcoders and related dictionary methods.
@@ -118,31 +127,9 @@ facets:
       human studies: Experiments with human participants.
       scaling analysis: Trends across model size, compute or time.
       literature analysis: Reviewing or classifying existing work.
-
-  - id: substrate
-    name: Substrate
-    multi: true
-    description: What kind of system the work is done on.
-    tags:
-      frontier closed: Frontier proprietary models via API (GPT, Claude, Gemini, Grok).
-      frontier internal: Internal or unreleased frontier models, lab-only access.
-      open weights large: Open-weight models of roughly 30B parameters or more.
-      open weights small: Open-weight models under roughly 30B parameters.
-      toy models: Small purpose-built or synthetic models.
-      agents: Models wrapped in agent scaffolds with tools.
-      multimodal: Vision, audio or video models.
-      no system: Theory, argument or policy with no experiments on models.
-
-  - id: developer
-    name: About (developer)
-    multi: true
-    description: Whose models are studied or discussed, if specific developers' models are central to the paper.
-    tags:
-      OpenAI: GPT and o-series models.
-      Anthropic: Claude models.
-      Google DeepMind: Gemini and Gemma models.
-      Meta: Llama models.
-      xAI: Grok models.
-      DeepSeek: DeepSeek models.
-      Alibaba: Qwen models.
-      Mistral: Mistral models.
+      synthetic document fine-tuning: Training on generated documents to install beliefs, values or knowledge.
+      control evaluations: Red-team attackers against a blue-team monitoring protocol, measuring safety and usefulness.
+      automated auditing agents: LLM agents that investigate a model or audit a benchmark (e.g. Petri, investigator agents).
+      deployment data analysis: Studying real usage logs, production transcripts or incidents.
+      distillation: Transferring traits or capabilities through a teacher model's outputs.
+      conceptual analysis: Argument or analysis without new experiments.

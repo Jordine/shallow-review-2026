@@ -25,7 +25,7 @@ DEFAULT_SITE_DATA = ROOT / "site" / "data.js"
 # Chip colour per facet (names of palettes defined in site/index.html)
 COLORS = {
     "evidence": "ink", "contribution": "violet", "paper_type": "blue", "concept": "green", "method": "orange",
-    "substrate": "olive", "agenda_2025": "rose", "developer": "outline", "month": "grey",
+    "agenda_2025": "rose", "month": "grey",
 }
 MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
@@ -49,9 +49,8 @@ def build_facets(facet_config: dict) -> list[dict]:
         {"id": "month", "name": "Month", "multi": False, "tags": [m.capitalize() for m in MONTHS],
          "descriptions": {}, "color": COLORS["month"]},
     ]
-    # Keep the site's facet order: what the paper shows, how, on what, where it fits, whose models
-    order = ["evidence", "contribution", "paper_type", "concept", "method", "substrate", "agenda_2025", "developer",
-             "month"]
+    # Keep the site's facet order: what the paper shows, what it's about, how, where it fits, when
+    order = ["evidence", "contribution", "paper_type", "concept", "method", "agenda_2025", "month"]
     return sorted(facets, key=lambda f: order.index(f["id"]))
 
 
@@ -67,8 +66,7 @@ def paper_record(row: pd.Series, tags: dict) -> dict:
         "contribution": [tags["contribution_primary"]] + [t for t in tags["contribution_secondary"]
                                                           if t != tags["contribution_primary"]],
         "paper_type": [tags["paper_type"]],
-        "concept": tags["concept"], "method": tags["method"], "substrate": tags["substrate"],
-        "agenda_2025": agendas, "developer": tags["developer"],
+        "concept": tags["concept"], "method": tags["method"], "agenda_2025": agendas,
         "month": [str(row["month"]).capitalize()],
     }
     citations = clean(row.get("citation_count"))
